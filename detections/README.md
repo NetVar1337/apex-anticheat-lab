@@ -46,12 +46,12 @@ cannot emit them, those metrics return NaN — the code never invents a substitu
 | `acq_per_min` | how often does this player acquire a new target? | context | — |
 | `ttt_med_ms` | time-to-target vs. angular distance travelled | aimbot | low |
 | `fitts_slope` | is acquisition speed consistent with human motor control? | aimbot | low |
-| `snap_ratio` | fraction of acquisitions that are spike-then-stop | aimbot | high |
+| `snap_ratio` | fraction of acquisitions at superhuman *effective* velocity (distance/duration) | aimbot | high |
 | `reaction_med_ms` | target-visible → first-aim latency | aimbot | low |
 | `fire_latency_med_ms` | crosshair-on-target → fire latency | triggerbot | low |
-| `recoil_regularity` | similarity of per-shot compensation vectors | no-recoil script | high |
+| `recoil_regularity` | clustering of per-shot compensation vectors (direction *and* magnitude) | no-recoil script | high |
 | `recoil_residual` | variance left after removing the learned pattern | no-recoil script | low |
-| `jerk_p95` | smoothness of the aim path (d³angle/dt³) | aimbot smoothing | two-sided |
+| `jerk_p95` | Flash & Hogan dimensionless normalised jerk (Savitzky-Golay smoothed) | aimbot smoothing | two-sided |
 | `track_smoothness` | lag-1 autocorrelation of angular velocity | CV / external aim | high |
 | `accuracy` | hits / fires | aimbot | high |
 | `hs_rate` | headshot share of hits | aimbot | high |
@@ -69,8 +69,39 @@ independent matches are the evidence; a single outlier is noise.
 
 - `fitts_slope` and `snap_ratio` need at least ~5 acquisitions per player to be meaningful;
   below that they return NaN and are excluded from the score.
-- `recoil_*` is computed per player, not per weapon. If a player mixes weapons the pattern
-  blurs; split the stream by `weapon_id` first for higher precision.
-- `jerk_p95` is sample-rate dependent. Do not compare cohorts with different input poll rates.
+- `jerk_p95` needs acquisitions of at least 7 samples (the Savitzky-Golay window); very short
+  snap acquisitions return NaN. That is acceptable — `snap_ratio` already covers them.
+- `recoil_*` deliberately **skips shots taken mid-flick**: in that window the input is aiming,
+  not recoil compensation, and the two cannot be separated from this signal alone. It is also
+  computed per player, not per weapon; split the stream by `weapon_id` first for precision.
+- `track_smoothness` is sample-rate dependent. Do not compare cohorts with different input
+  poll rates.
 - Metrics assume `t_ms` is monotonic per player. Non-monotonic telemetry is silently
   re-sorted, which can hide pipeline bugs — validate your exporter before trusting results.
+- **Every threshold here is a starting point.** `SNAP_EFFECTIVE_DEG_S`, `STOP_EPS_DEG_S` and
+  the feature weights in `detectors.py` must be calibrated against your own labelled
+  population. Do not deploy these numbers.
+
+## Sanity check
+
+The metric primitives were verified against four synthetic archetypes (10 acquisitions each,
+same acquisition distances, same cohort):
+
+| archetype | `snap_ratio` | `fitts_slope` | `jerk_p95` | `track_smoothness` | `recoil_regularity` | `recoil_residual` |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| human (noisy flick + noisy compensation) | 0.00 | 6.38 | 12975 | 0.855 | 0.814 | 0.255 |
+| smooth aimbot (interpolated, low-jitter) | 0.00 | 8.01 | 880 | 0.959 | 0.961 | 0.054 |
+| **snap aimbot** (30° in ~32 ms) | **1.00** | **0.94** | n/a | 0.768 | 0.729 | 0.474 |
+| **recoil script** (identical per-shot vector) | 0.00 | -1.32 | 756 | 0.961 | **1.000** | **0.000** |
+
+Each planted cheat is isolated by the feature it is theoretically predicted to trip:
+`snap_ratio` + flat `fitts_slope` for the snap aimbot, `recoil_regularity` → 1.0 with
+`recoil_residual` → 0.0 for the recoil script, and abnormally low `jerk_p95` /
+abnormally high `track_smoothness` for interpolated smoothing.
+
+Three metrics were rewritten after this test exposed bugs: acquisition segmentation was
+inflating durations ~10x, `recoil_regularity` used scale-invariant cosine similarity (a human
+compensating straight down scored as perfectly regular), and `jerk_p95` differentiated raw
+sampled telemetry (dominated by sampling noise, ~10^6 units) instead of the dimensionless
+normalised jerk.
+
