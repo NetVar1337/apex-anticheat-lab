@@ -82,10 +82,10 @@ def main() -> int:
     z = z_scores(metrics, baselines)
     feats = [f for f in FEATURE_WEIGHTS if f"z_{f}" in z.columns]
 
-    # weighted mean over available features; require at least 3 to score at all
+    # weighted mean over available features; require at least 3 finite features
     num = pd.DataFrame({f: z[f"z_{f}"] * z[f"w_{f}"] for f in feats})
     den = pd.DataFrame({f: z[f"w_{f}"] * z[f"z_{f}"].notna() for f in feats})
-    n_avail = den.sum(axis=1)
+    n_avail = pd.DataFrame({f: z[f"z_{f}"].notna() for f in feats}).sum(axis=1)
     score = num.sum(axis=1) / den.sum(axis=1).replace(0, np.nan)
     score[n_avail < 3] = np.nan
 

@@ -1,6 +1,8 @@
 -- Match-integrity / anti-cheat telemetry schema.
--- Target: any SQL engine with window functions (PostgreSQL, BigQuery, Snowflake, DuckDB).
--- Deliberately engine-neutral: no game-specific types.
+-- Target: PostgreSQL 14+. Not engine-neutral: BOOLEAN, DOUBLE PRECISION, and the
+-- queries in kpi_queries.sql use Postgres date casts and percentile syntax.
+-- A reviewer can run the three headline questions without Postgres via
+-- sql/sqlite_headlines.py.
 
 CREATE TABLE players (
     player_id        BIGINT PRIMARY KEY,
@@ -27,6 +29,17 @@ CREATE TABLE hardware (
     tpm_present      BOOLEAN,
     tpm_quote_ok     BOOLEAN,
     is_spoofed_suspect BOOLEAN DEFAULT FALSE
+);
+
+-- Point-in-time component reads. `hardware` is the current canonical row.
+-- One row cannot show churn. Spoofing is a disagreement across observations.
+CREATE TABLE hardware_observations (
+    obs_id        BIGINT PRIMARY KEY,
+    hw_id         BIGINT NOT NULL REFERENCES hardware(hw_id),
+    observed_at   TIMESTAMP NOT NULL,
+    mb_uuid       TEXT,
+    disk_serial   TEXT,
+    mac_vendor    TEXT
 );
 
 CREATE TABLE player_hw (

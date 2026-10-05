@@ -1,0 +1,22 @@
+Synthetic SQLite fixture. Not game data.
+Regenerate with: python sql/sqlite_headlines.py
+
+## infection_rate
+day | matches_played | infected_matches | infection_rate_pct
+2026-03-01 | 2 | 2 | 100.0
+2026-03-02 | 1 | 0 | 0.0
+
+## cohort_kill_z
+player_id | rank_tier | matches | avg_kpm | above_tier_mean
+1 | gold | 2 | 0.75 | 0.25
+4 | bronze | 1 | 0.1 | 0.0
+5 | bronze | 1 | 0.1 | 0.0
+2 | gold | 2 | 0.25 | -0.25
+
+## banned_hardware_reuse
+player_id | account_created | fingerprint | prior_banned_player | banned_at
+3 | 2026-02-01 | fp-banned | 1 | 2026-01-01
+
+## observation_churn
+hw_id | distinct_mb_uuid | distinct_disk_serial | distinct_mac_vendors
+100 | 3 | 3 | 3

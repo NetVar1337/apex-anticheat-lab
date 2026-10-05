@@ -1,5 +1,6 @@
 -- Match-integrity KPI and triage queries.
--- Engine-neutral SQL (window functions, CTEs). Assumes the schema in schema.sql.
+-- PostgreSQL 14+. Not engine-neutral: `::date`, PERCENTILE_CONT, DATE_PART, NOW().
+-- sql/sqlite_headlines.py runs the headline questions on a synthetic fixture.
 --
 -- These are the queries an analyst runs daily: they answer "is the game healthy?",
 -- "where should review effort go?", and "did the last enforcement wave work?".
@@ -70,21 +71,46 @@ ORDER BY max_z DESC
 LIMIT 200;
 
 -- ---------------------------------------------------------------------------
--- 3. Headshot-rate outliers (long-range accuracy)
---    Aimbots and recoil scripts show up as an impossible tail here, especially
---    on high-recoil weapons at range.
+-- 3. Headshot-rate outliers, cohorted
+--    A raw threshold (the old draft used 0.65) is not a detection. A controller
+--    player and a mouse player do not share a headshot distribution, and neither
+--    do Bronze and Predator. Score against the cohort, and require a sample.
 -- ---------------------------------------------------------------------------
-SELECT mp.player_id,
-       SUM(mp.shots_hit)  AS hits,
-       SUM(mp.headshots)  AS headshots,
-       ROUND(1.0 * SUM(mp.headshots) / NULLIF(SUM(mp.shots_hit), 0), 4) AS hs_rate,
-       ROUND(AVG(mp.damage), 1) AS avg_damage
-FROM match_players mp
-WHERE mp.shots_hit >= 50
-GROUP BY mp.player_id
-HAVING SUM(mp.shots_hit) >= 200
-   AND 1.0 * SUM(mp.headshots) / NULLIF(SUM(mp.shots_hit), 0) > 0.65
-ORDER BY hs_rate DESC
+WITH per_player AS (
+    SELECT mp.player_id,
+           p.rank_tier,
+           p.input_device,
+           SUM(mp.shots_hit) AS hits,
+           SUM(mp.headshots) AS headshots,
+           1.0 * SUM(mp.headshots) / NULLIF(SUM(mp.shots_hit), 0) AS hs_rate
+    FROM match_players mp
+    JOIN players p ON p.player_id = mp.player_id
+    GROUP BY mp.player_id, p.rank_tier, p.input_device
+    HAVING SUM(mp.shots_hit) >= 200
+),
+cohort AS (
+    SELECT rank_tier,
+           input_device,
+           AVG(hs_rate) AS mu,
+           STDDEV_SAMP(hs_rate) AS sigma,
+           COUNT(*) AS n
+    FROM per_player
+    GROUP BY rank_tier, input_device
+    HAVING COUNT(*) >= 100
+)
+SELECT pp.player_id,
+       pp.rank_tier,
+       pp.input_device,
+       pp.hits,
+       pp.headshots,
+       ROUND(pp.hs_rate, 4) AS hs_rate,
+       ROUND((pp.hs_rate - c.mu) / NULLIF(c.sigma, 0), 2) AS z
+FROM per_player pp
+JOIN cohort c
+  ON c.rank_tier = pp.rank_tier
+ AND c.input_device = pp.input_device
+WHERE (pp.hs_rate - c.mu) / NULLIF(c.sigma, 0) > 4
+ORDER BY z DESC
 LIMIT 200;
 
 -- ---------------------------------------------------------------------------
@@ -260,24 +286,23 @@ ORDER BY p.account_created DESC
 LIMIT 200;
 
 -- ---------------------------------------------------------------------------
--- 10. Hardware fingerprint inconsistency (spoofing indicator)
---     A genuine machine has consistent components across sessions. A spoofer
---     churns identifiers independently, so the fingerprint's component set
---     disagrees with its own history and with its MAC/SMBIOS vendors.
+-- 10. Hardware component churn (spoofing indicator)
+--    `hardware` is one current row per machine. COUNT(DISTINCT) on that row is
+--    always 1, so it cannot detect churn. Read hardware_observations.
 -- ---------------------------------------------------------------------------
-SELECT h.hw_id,
-       h.fingerprint,
-       COUNT(DISTINCT h.mb_uuid)     AS distinct_mb_uuid,
-       COUNT(DISTINCT h.disk_serial) AS distinct_disk_serial,
-       COUNT(DISTINCT h.mac_vendor)  AS distinct_mac_vendors,
-       MIN(h.first_seen)             AS first_seen,
-       MAX(h.last_seen)              AS last_seen
-FROM hardware h
-GROUP BY h.hw_id, h.fingerprint
-HAVING COUNT(DISTINCT h.mb_uuid) > 1
-    OR COUNT(DISTINCT h.disk_serial) > 2
-    OR COUNT(DISTINCT h.mac_vendor) > 2
-ORDER BY distinct_disk_serial DESC
+SELECT o.hw_id,
+       COUNT(*) AS observations,
+       COUNT(DISTINCT o.mb_uuid) AS distinct_mb_uuid,
+       COUNT(DISTINCT o.disk_serial) AS distinct_disk_serial,
+       COUNT(DISTINCT o.mac_vendor) AS distinct_mac_vendors,
+       MIN(o.observed_at) AS first_observed,
+       MAX(o.observed_at) AS last_observed
+FROM hardware_observations o
+GROUP BY o.hw_id
+HAVING COUNT(DISTINCT o.mb_uuid) > 1
+    OR COUNT(DISTINCT o.disk_serial) > 2
+    OR COUNT(DISTINCT o.mac_vendor) > 2
+ORDER BY distinct_disk_serial DESC, distinct_mb_uuid DESC
 LIMIT 200;
 
 -- ---------------------------------------------------------------------------
